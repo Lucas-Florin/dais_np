@@ -31,6 +31,8 @@ from neural_process.encoder_network import (
     EncoderNetworkSAMA,
 )
 
+from neural_process.dais import differentiable_annealed_importance_sampling
+
 
 class NeuralProcess:
     _f_normalizers = "000_normalizers.txt"
@@ -690,6 +692,14 @@ class NeuralProcess:
                     cov_z_ctx=cov_z_ctx,
                     n_marg=loss_kwargs["n_marg"],
                 )
+            elif loss_type == "DAIS":
+                loss = loss - self._log_marg_lhd_np_dais(
+                    x_tgt=x_tgt,
+                    y_tgt=y_tgt,
+                    mu_z_ctx=mu_z_ctx,
+                    cov_z_ctx=cov_z_ctx,
+                    n_marg=loss_kwargs["n_marg"],
+                )
             elif loss_type == "IWMC":
                 initial_latent_state = self.aggregator.initial_latent_state
                 mu_z_prior = initial_latent_state[0]
@@ -865,6 +875,88 @@ class NeuralProcess:
         ll = ll / (n_tsk * n_ls * n_tgt)
 
         return ll
+    
+    
+    def _log_marg_lhd_np_dais(self, x_tgt, y_tgt, mu_z_ctx, cov_z_ctx, n_marg):
+        assert x_tgt.ndim == y_tgt.ndim == 3  # (n_tsk, n_tst, d_x/d_y)
+        assert x_tgt.nelement() != 0
+        assert y_tgt.nelement() != 0
+
+        # obtain predictions
+        # mu_y, std_y = self._predict(x_tgt, mu_z_ctx, cov_z_ctx, n_marg=n_marg)
+        # mu_y, std_y shape = (n_tsk, n_ls, n_marg, n_tst, d_y)
+
+        # add latent state and marginalization dimension to y-values
+        n_ls = mu_z_ctx.shape[1]
+        n_tsk = x_tgt.shape[0]
+        n_tgt = x_tgt.shape[1]
+        assert n_marg > 0
+        y_tgt = y_tgt[:, None, None, :, :].expand(-1, n_ls, n_marg, -1, -1)
+
+        cov_z_ctx = torch.sqrt(cov_z_ctx)
+
+        # expand mu_z, std_z w.r.t. n_marg
+        mu_z_ctx = mu_z_ctx[:, :, None, :]
+        mu_z_ctx = mu_z_ctx.expand(n_tsk, n_ls, n_marg, -1)
+        cov_z_ctx = cov_z_ctx[:, :, None, :]
+        cov_z_ctx = cov_z_ctx.expand(n_tsk, n_ls, n_marg, -1)
+
+        eps = self._rng.randn(*mu_z_ctx.shape)
+        eps = torch.tensor(eps, dtype=torch.float32).to(self.device)
+        initial_z = mu_z_ctx + eps * cov_z_ctx
+        
+        def log_likelihood(z):
+            # obtain predictions
+            mu_y, std_y = self.decoder.decode(x_tgt, z)
+            # mu_y, std_y shape = (n_tsk, n_ls, n_marg, n_tst, d_y)
+
+            # add latent state and marginalization dimension to y-values
+
+            gaussian = torch.distributions.Normal(mu_y, std_y)
+            ll = gaussian.log_prob(y_tgt)
+            # sum log-likelihood over output and datapoint dimension
+            ll = torch.sum(ll, dim=(-2, -1))
+            return ll
+        
+        def log_prior(z):
+            dist = torch.distributions.Normal(mu_z_ctx, cov_z_ctx.sqrt())
+            lp = dist.log_prob(z)
+            lp = torch.sum(lp, dim=(-1))
+            return lp
+        
+        def log_posterior(z):
+            return log_prior(z) + log_likelihood(z)
+    
+        
+        # compute log-likelihood for all datapoints
+        
+        
+        ll = differentiable_annealed_importance_sampling(
+            initial_z,
+            log_posterior,
+            log_prior,
+            n_steps=10,
+            step_size=0.08,
+        )
+
+        # sum log-likelihood over output and datapoint dimension
+        # ll = torch.sum(ll, dim=(-2, -1))
+
+        # compute MC-average
+        ll = torch.logsumexp(ll, dim=2)
+
+        # add -log(n_marg)
+        ll = -np.log(n_marg) + ll
+
+        # sum task- and ls-dimensions
+        ll = torch.sum(ll, dim=(0, 1))
+        assert ll.ndim == 0
+
+        # compute average log-likelihood over all datapoints
+        ll = ll / (n_tsk * n_ls * n_tgt)
+
+        return ll
+
 
     def _log_marg_lhd_true_np_mc(
         self,

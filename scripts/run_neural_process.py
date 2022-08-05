@@ -123,7 +123,7 @@ def main():
     config["d_z"] = 16
     config["aggregator_type"] = "BA"
     config["loss_type"] = "MC"
-    config["input_mlp_std_y"] = "xz"
+    config["input_mlp_std_y"] = ""
     config["self_attention_type"] = None
     config["f_act"] = "relu"
     config["n_hidden_layers"] = 2
