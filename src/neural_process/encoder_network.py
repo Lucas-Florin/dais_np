@@ -1,6 +1,5 @@
 import torch
 
-from neural_process.attention import Attention
 from np_util.mlp import MLP
 from np_util.output_trafo import output_trafo
 
@@ -147,30 +146,3 @@ class EncoderNetworkMA:
         return list(self.r_net.parameters())
 
 
-class EncoderNetworkSAMA(EncoderNetworkMA):
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        self.attention = Attention(**kwargs)
-
-    def to(self, device):
-        super().to(device=device)
-        self.attention.set_device(device=device)
-
-    def save_weights(self, logpath, epoch):
-        super().save_weights(logpath=logpath, epoch=epoch)
-        self.attention.save_weights(logpath=logpath, epoch=epoch)
-
-    def load_weights(self, logpath, epoch):
-        super().load_weights(logpath=logpath, epoch=epoch)
-        self.attention.load_weights(logpath=logpath, epoch=epoch)
-
-    def encode(self, x, y):
-        r = super().encode(x=x, y=y)[0]
-        if x.shape[1] > 0:  # only apply self-attention if context set is not empty
-            r = self.attention(q=x, k=x, v=r)
-
-        return (r,)
-
-    @property
-    def parameters(self):
-        return super().parameters + self.attention.parameters

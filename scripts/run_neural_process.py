@@ -124,7 +124,6 @@ def main():
     config["aggregator_type"] = "BA"
     config["loss_type"] = "MC"
     config["input_mlp_std_y"] = ""
-    config["self_attention_type"] = None
     config["f_act"] = "relu"
     config["n_hidden_layers"] = 2
     config["n_hidden_units"] = 64
@@ -154,7 +153,6 @@ def main():
         aggregator_type=config["aggregator_type"],
         loss_type=config["loss_type"],
         input_mlp_std_y=config["input_mlp_std_y"],
-        self_attention_type=config["self_attention_type"],
         latent_prior_scale=config["latent_prior_scale"],
         f_act=config["f_act"],
         n_hidden_layers=config["n_hidden_layers"],

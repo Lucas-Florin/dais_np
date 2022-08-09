@@ -19,16 +19,12 @@ from tqdm import tqdm
 
 from neural_process.aggregator import (
     BayesianAggregator,
-    MaxAggregator,
-    MaxAggregatorRtoZ,
-    MeanAggregator,
     MeanAggregatorRtoZ,
 )
-from neural_process.decoder_network import DecoderNetworkPB, DecoderNetworkSamples
+from neural_process.decoder_network import DecoderNetworkSamples
 from neural_process.encoder_network import (
     EncoderNetworkBA,
     EncoderNetworkMA,
-    EncoderNetworkSAMA,
 )
 
 from neural_process.dais import differentiable_annealed_importance_sampling
@@ -38,16 +34,9 @@ class NeuralProcess:
     _f_normalizers = "000_normalizers.txt"
     _f_settings = "000_settings.txt"
     _f_n_tasks_seen = "000_n_tasks_seen.txt"
-    _available_aggregator_types = ["BA", "MA", "SA_MA", "MAX"]
-    _available_loss_types = ["PB", "VI", "MC", "IWMC"]
+    _available_aggregator_types = ["BA", "MA"]
+    _available_loss_types = ["VI", "MC"]
     _available_input_mlp_std_y = ["xz", "x", "z", "cov_z", ""]
-    _available_self_attention_types = [
-        None,
-        "uniform",
-        "laplace",
-        "dot_product",
-        "multihead",
-    ]
 
     def __init__(
         self,
@@ -60,7 +49,6 @@ class NeuralProcess:
         aggregator_type: str = "BA",
         loss_type: str = "MC",
         input_mlp_std_y: Optional[str] = None,
-        self_attention_type: Optional[str] = None,
         latent_prior_scale: float = 1.0,
         f_act: str = "relu",
         n_hidden_layers: int = 2,
@@ -82,7 +70,6 @@ class NeuralProcess:
             aggregator_type=aggregator_type,
             loss_type=loss_type,
             input_mlp_std_y=input_mlp_std_y,
-            self_attention_type=self_attention_type,
             latent_prior_scale=latent_prior_scale,
             f_act=f_act,
             n_hidden_layers=n_hidden_layers,
@@ -130,27 +117,16 @@ class NeuralProcess:
             aggregator_type,
             loss_type,
             input_mlp_std_y,
-            self_attention_type,
         ) in product(
             NeuralProcess._available_aggregator_types,
             NeuralProcess._available_loss_types,
             NeuralProcess._available_input_mlp_std_y,
-            NeuralProcess._available_self_attention_types,
         ):
-            if (loss_type == "PB") and (input_mlp_std_y != "xz"):
-                # Deterministic architectures require to pass "xz" to variance decoder
-                # TODO: actually, this should be called mu_z, cov_z for BA
-                continue
-            if (aggregator_type != "SA_MA") and (self_attention_type is not None):
-                continue
-            if (aggregator_type == "SA_MA") and (self_attention_type is None):
-                continue
             model_specs.append(
                 {
                     "aggregator_type": aggregator_type,
                     "loss_type": loss_type,
                     "input_mlp_std_y": input_mlp_std_y,
-                    "self_attention_type": self_attention_type,
                 }
             )
         return model_specs
@@ -158,8 +134,6 @@ class NeuralProcess:
     @staticmethod
     def is_valid_model_spec(model_spec: dict) -> bool:
         ms = copy.deepcopy(model_spec)
-        if "self_attention_type" not in ms:
-            ms["self_attention_type"] = None
         return ms in NeuralProcess.get_valid_model_specs()
 
     @staticmethod
@@ -173,7 +147,6 @@ class NeuralProcess:
         aggregator_type: str,
         loss_type: str,
         input_mlp_std_y: Optional[str],
-        self_attention_type: Optional[str],
         f_act: str,
         n_hidden_layers: int,
         n_hidden_units: int,
@@ -193,7 +166,6 @@ class NeuralProcess:
             "aggregator_type": aggregator_type,
             "loss_type": loss_type,
             "input_mlp_std_y": input_mlp_std_y,
-            "self_attention_type": self_attention_type,
             "f_act": f_act,
             "n_hidden_layers": n_hidden_layers,
             "n_hidden_units": n_hidden_units,
@@ -209,7 +181,6 @@ class NeuralProcess:
             "aggregator_type": config["aggregator_type"],
             "loss_type": config["loss_type"],
             "input_mlp_std_y": config["input_mlp_std_y"],
-            "self_attention_type": config["self_attention_type"],
         }
         assert NeuralProcess.is_valid_model_spec(model_spec)
 
@@ -221,10 +192,8 @@ class NeuralProcess:
             "mlp_layers_mu_y": network_arch,
             "input_mlp_std_y": config["input_mlp_std_y"],
         }
-        if config["aggregator_type"] == "BA" and config["loss_type"] == "PB":
-            decoder_kwargs["arch"] = "separate_networks_separate_input"
-        else:  # VI or MC or IWMC
-            decoder_kwargs["arch"] = "separate_networks"
+
+        decoder_kwargs["arch"] = "separate_networks"
         if config["input_mlp_std_y"] != "":
             decoder_kwargs["mlp_layers_std_y"] = network_arch
         else:
@@ -238,27 +207,11 @@ class NeuralProcess:
                 "mlp_layers_r": network_arch,
                 "mlp_layers_cov_r": network_arch,
             }
-        elif config["aggregator_type"] == "SA_MA":
-            assert config["self_attention_type"] is not None
-            encoder_kwargs = {
-                "mlp_layers_r": network_arch,
-                "self_attention_type": config["self_attention_type"],
-            }
-            if config["self_attention_type"] == "multihead":
-                num_heads = 8
-                assert (
-                    config["d_z"] % num_heads == 0
-                ), "d_z has to be divisible by num_heads = {:d}".format(num_heads)
-                encoder_kwargs["num_heads"] = num_heads
         else:  # MA or MAX
             encoder_kwargs = {"mlp_layers_r": network_arch}
 
         # aggregator_kwargs
-        if (
-            config["aggregator_type"] == "MA"
-            or config["aggregator_type"] == "MAX"
-            or config["aggregator_type"] == "SA_MA"
-        ) and (config["loss_type"] != "PB"):
+        if config["aggregator_type"] == "MA":
             aggregator_kwargs = {
                 "arch": "separate_networks",
                 "mlp_layers_r_to_mu_z": 1 * [config["n_hidden_units"]],
@@ -273,9 +226,9 @@ class NeuralProcess:
             aggregator_kwargs = {}
 
         # loss_kwargs
-        if config["loss_type"] == "MC" or config["loss_type"] == "IWMC":
+        if config["loss_type"] == "MC":
             loss_kwargs = {"n_marg": n_samples}
-        else:  # loss_type == "PB" or loss_type == "VI"
+        else:  # loss_type == "VI"
             loss_kwargs = {}
 
         config.update(
@@ -284,7 +237,6 @@ class NeuralProcess:
                 "aggregator_kwargs": aggregator_kwargs,
                 "decoder_kwargs": decoder_kwargs,
                 "loss_kwargs": loss_kwargs,
-                "predictions_are_deterministic": config["loss_type"] == "PB",
             }
         )
 
@@ -357,8 +309,6 @@ class NeuralProcess:
         # create encoder
         if self._config["aggregator_type"] == "BA":
             encoder = EncoderNetworkBA
-        elif self._config["aggregator_type"] == "SA_MA":
-            encoder = EncoderNetworkSAMA
         else:  # MeanAggregator or MaxAggregator
             encoder = EncoderNetworkMA
         self.encoder = encoder(
@@ -373,16 +323,8 @@ class NeuralProcess:
         # create aggregator
         if self._config["aggregator_type"] == "BA":
             aggregator = BayesianAggregator
-        elif self._config["aggregator_type"] == "MAX":
-            if self._config["loss_type"] == "PB":
-                aggregator = MaxAggregator
-            else:  # MonteCarlo or VI-inspired losses
-                aggregator = MaxAggregatorRtoZ
         else:  # MeanAggregator (w/ or w/o self-attention)
-            if self._config["loss_type"] == "PB":
-                aggregator = MeanAggregator
-            else:  # MonteCarlo or VI-inspired losses
-                aggregator = MeanAggregatorRtoZ
+            aggregator = MeanAggregatorRtoZ
         self.aggregator = aggregator(
             d_r=self._config["d_z"],  # we set d_r == d_z
             d_z=self._config["d_z"],
@@ -392,14 +334,7 @@ class NeuralProcess:
         )
 
         # create decoder
-        if self._config["aggregator_type"] == "BA":
-            if self._config["loss_type"] == "PB":
-                decoder = DecoderNetworkPB
-            else:  # MonteCarlo or VI-inspired loss
-                decoder = DecoderNetworkSamples
-        else:  # MeanAggregator (w/ or w/o self-attention)
-            # MA + PB also uses DecoderNetworkSamples, as the z-input can be used for r
-            decoder = DecoderNetworkSamples
+        decoder = DecoderNetworkSamples
         self.decoder = decoder(
             d_x=self._config["d_x"],
             d_y=self._config["d_y"],
@@ -608,9 +543,7 @@ class NeuralProcess:
             # TODO: is it correct to evaluate MC also for IWMC-models?
             loss_type = "MC"
             loss_kwargs = {
-                "n_marg": 1
-                if self._config["predictions_are_deterministic"]
-                else 500,  # TODO: how many samples to use?
+                "n_marg": 500,  # TODO: how many samples to use?
             }
 
             # average over some context set sizes
@@ -677,14 +610,8 @@ class NeuralProcess:
                 assert cov_z_ctx.ndim == 3
                 assert mu_z_ctx.shape[1] == cov_z_ctx.shape[1] == 1
 
-            if loss_type == "PB":
-                loss = loss - self._conditional_ll(
-                    x_tgt=x_tgt,
-                    y_tgt=y_tgt,
-                    mu_z=mu_z_ctx,
-                    cov_z=cov_z_ctx,
-                )
-            elif loss_type == "MC":
+
+            if loss_type == "MC":
                 loss = loss - self._log_marg_lhd_np_mc(
                     x_tgt=x_tgt,
                     y_tgt=y_tgt,
@@ -698,21 +625,6 @@ class NeuralProcess:
                     y_tgt=y_tgt,
                     mu_z_ctx=mu_z_ctx,
                     cov_z_ctx=cov_z_ctx,
-                    n_marg=loss_kwargs["n_marg"],
-                )
-            elif loss_type == "IWMC":
-                initial_latent_state = self.aggregator.initial_latent_state
-                mu_z_prior = initial_latent_state[0]
-                cov_z_prior = initial_latent_state[1]
-                loss = loss - self._log_marg_lhd_true_np_mc(
-                    x_tgt=x_tgt,
-                    y_tgt=y_tgt,
-                    x_ctx=x_ctx,
-                    y_ctx=y_ctx,
-                    mu_z_ctx=mu_z_ctx,
-                    cov_z_ctx=cov_z_ctx,
-                    mu_z_prior=mu_z_prior,
-                    cov_z_prior=cov_z_prior,
                     n_marg=loss_kwargs["n_marg"],
                 )
             elif loss_type == "VI":
@@ -795,7 +707,7 @@ class NeuralProcess:
         x_ctx = x_all[:, idx_pts[:n_ctx], :]
         y_ctx = y_all[:, idx_pts[:n_ctx], :]
 
-        if not (loss_type == "MCIW" or loss_type == "IWMCIW" or loss_type == "VI"):
+        if not (loss_type == "VI"):
             # use remaining points as test points
             x_tgt = x_all[:, idx_pts[n_ctx:], :]
             y_tgt = y_all[:, idx_pts[n_ctx:], :]
@@ -957,142 +869,6 @@ class NeuralProcess:
 
         return ll
 
-
-    def _log_marg_lhd_true_np_mc(
-        self,
-        x_tgt,
-        y_tgt,
-        x_ctx,
-        y_ctx,
-        mu_z_ctx,
-        cov_z_ctx,
-        mu_z_prior,
-        cov_z_prior,
-        n_marg,
-    ):
-        assert x_tgt.ndim == y_tgt.ndim == 3  # (n_tsk, n_tst, d_x/d_y)
-        assert x_ctx.ndim == y_ctx.ndim == 3  # (n_tsk, n_ctx, d_x/d_y)
-        assert x_tgt.shape[0] == x_ctx.shape[0] == y_tgt.shape[0] == y_ctx.shape[0]
-        assert x_tgt.shape[2] == x_ctx.shape[2]
-        assert x_tgt.shape[2] == x_ctx.shape[2]
-        assert y_tgt.shape[2] == y_ctx.shape[2]
-        assert x_tgt.nelement() != 0
-        assert y_tgt.nelement() != 0
-        assert n_marg > 0
-        assert mu_z_prior.ndim == cov_z_prior.ndim == 2  # (n_tsk, d_z)
-        assert mu_z_ctx.ndim == cov_z_ctx.ndim == 3  # (n_tsk, n_ls, d_z)
-        assert mu_z_prior.shape[0] == mu_z_ctx.shape[0] == x_tgt.shape[0]
-        assert cov_z_prior.shape[0] == cov_z_ctx.shape[0] == x_tgt.shape[0]
-
-        # shapes
-        n_tsk = x_tgt.shape[0]
-        n_tgt = x_tgt.shape[1]
-        n_ls = mu_z_ctx.shape[1]
-
-        # obtain predictions (use same sample set for both tgt and ctx)
-        all_x = torch.cat((x_tgt, x_ctx), dim=1)
-        all_mu_y, all_std_y, z = self._predict(
-            x=all_x,
-            mu_z=mu_z_ctx,
-            cov_z=cov_z_ctx,
-            n_marg=n_marg,
-            return_latent_samples=True,
-        )
-        # all_mu_y, all_std_y shape = (n_tsk, n_ls, n_marg, n_tst, d_y)
-        # z = (n_tsk, n_ls, n_marg, d_z)
-        mu_y_tgt, mu_y_ctx = all_mu_y[:, :, :, :n_tgt, :], all_mu_y[:, :, :, n_tgt:, :]
-        std_y_tgt, std_y_ctx = (
-            all_std_y[:, :, :, :n_tgt, :],
-            all_std_y[:, :, :, n_tgt:, :],
-        )
-
-        # add latent state and marginalization dimension to y-values
-        y_tgt = y_tgt[:, None, None, :, :].expand(-1, n_ls, n_marg, -1, -1)
-        y_ctx = y_ctx[:, None, None, :, :].expand(-1, n_ls, n_marg, -1, -1)
-
-        # compute log-likelihood for all datapoints
-        gaussian_y_tgt = torch.distributions.Normal(mu_y_tgt, std_y_tgt)
-        log_p_y_tgt = gaussian_y_tgt.log_prob(
-            y_tgt
-        )  # (n_tsk, n_ls, n_marg, n_tgt, d_y)
-        gaussian_y_ctx = torch.distributions.Normal(mu_y_ctx, std_y_ctx)
-        log_p_y_ctx = gaussian_y_ctx.log_prob(
-            y_ctx
-        )  # (n_tsk, n_ls, n_marg, n_ctx, d_y)
-
-        # sum log-likelihood over output and datapoint dimension
-        log_p_y_tgt = torch.sum(log_p_y_tgt, dim=(-2, -1))  # (n_tsk, n_ls, n_marg)
-        log_p_y_ctx = torch.sum(log_p_y_ctx, dim=(-2, -1))  # (n_tsk, n_ls, n_marg)
-
-        # compute normalized log-importance weights (works for empty context sets)
-        #  for empty context sets this yields log_p_ctx = 0, i.e., p_ctx = 1 which is
-        #  what we want in order to arrive at log_w_norm = log(1/S)
-        mu_z_prior = mu_z_prior[:, None, :].expand(-1, n_ls, -1)
-        cov_z_prior = cov_z_prior[:, None, :].expand(-1, n_ls, -1)
-        log_w_norm = self._log_normalized_importance_weights_true_np(
-            z=z,
-            mu_z_prior=mu_z_prior,
-            cov_z_prior=cov_z_prior,
-            mu_z_posterior=mu_z_ctx,
-            cov_z_posterior=cov_z_ctx,
-            log_p_y_ctx=log_p_y_ctx,
-        )
-
-        # compute MC-average
-        ll = torch.logsumexp(log_w_norm + log_p_y_tgt, dim=2)  # (n_tsk, n_ls)
-
-        # sum task- and ls-dimensions
-        ll = torch.sum(ll, dim=(0, 1))
-        assert ll.ndim == 0
-
-        # compute average log-likelihood over L * n_tgt with L = n_tsk * n_ls
-        ll = ll / (n_tsk * n_ls * n_tgt)
-
-        return ll
-
-    def _log_normalized_importance_weights_true_np(
-        self, z, mu_z_prior, cov_z_prior, mu_z_posterior, cov_z_posterior, log_p_y_ctx
-    ):
-        assert z.ndim == 4
-        assert z.shape[-1] == self._config["d_z"]
-        assert (
-            mu_z_prior.ndim
-            == cov_z_prior.ndim
-            == mu_z_posterior.ndim
-            == cov_z_posterior.ndim
-            == 3
-        )  # (n_tsk, n_ls, d_z)
-        n_ls = z.shape[1]
-        n_marg = z.shape[2]
-
-        ## prior
-        mu_z_prior = mu_z_prior[:, :, None, :].expand(-1, -1, n_marg, -1)
-        cov_z_prior = cov_z_prior[:, :, None, :].expand(-1, -1, n_marg, -1)
-        std_z_prior = torch.sqrt(cov_z_prior)
-        gaussian_z_prior = torch.distributions.Normal(mu_z_prior, std_z_prior)
-        log_p_prior = gaussian_z_prior.log_prob(z)  # (n_tsk, n_ls, n_marg, d_z)
-        # factorized Gaussians -> joint log-prob = sum(log_probs)
-        log_p_prior = torch.sum(log_p_prior, dim=-1)  # (n_tsk, n_ls, n_marg)
-
-        ## posterior
-        mu_z_posterior = mu_z_posterior[:, :, None, :].expand(-1, -1, n_marg, -1)
-        cov_z_posterior = cov_z_posterior[:, :, None, :].expand(-1, -1, n_marg, -1)
-        std_z_posterior = torch.sqrt(cov_z_posterior)
-        gaussian_z_posterior = torch.distributions.Normal(
-            mu_z_posterior, std_z_posterior
-        )
-        log_p_posterior = gaussian_z_posterior.log_prob(z)  # (n_tsk, n_ls, n_marg, d_z)
-        # factorized Gaussians -> joint log-prob = sum(log_probs)
-        log_p_posterior = torch.sum(log_p_posterior, dim=-1)  # (n_tsk, n_ls, n_marg)
-
-        ## importance weights
-        log_w = log_p_prior - log_p_posterior + log_p_y_ctx
-        log_w_normalizer = torch.logsumexp(log_w, dim=2)  # (n_tsk, n_ls)
-        log_w_normalizer = log_w_normalizer[:, :, None].expand(-1, -1, n_marg)
-        log_w_norm = log_w - log_w_normalizer  # (n_tsk, n_ls, n_marg)
-
-        return log_w_norm  # (n_tsk, n_ls, n_marg)
-
     def _elbo_np(
         self,
         x_tgt,
@@ -1157,34 +933,21 @@ class NeuralProcess:
         n_ls = mu_z.shape[1]
         d_z = mu_z.shape[2]
 
-        if self.settings["loss_type"] == "PB":
-            assert not return_latent_samples
-            assert n_marg == 1
-            if self.settings["aggregator_type"] == "BA":
-                mu_y, std_y = self.decoder.decode(x, mu_z, cov_z)
-                # add dummy n_marg-dim
-                mu_y, std_y = mu_y[:, :, None, :, :], std_y[:, :, None, :, :]
-            else:
-                # add dummy n_marg-dim
-                mu_z = mu_z[:, :, None, :]
-                mu_z = mu_z.expand(n_tsk, n_ls, n_marg, d_z)
-                mu_y, std_y = self.decoder.decode(x, mu_z)
-        else:  # MC, IWMC, or VI losses:
-            std_z = torch.sqrt(cov_z)
+        std_z = torch.sqrt(cov_z)
 
-            # expand mu_z, std_z w.r.t. n_marg
-            mu_z = mu_z[:, :, None, :]
-            mu_z = mu_z.expand(n_tsk, n_ls, n_marg, d_z)
-            std_z = std_z[:, :, None, :]
-            std_z = std_z.expand(n_tsk, n_ls, n_marg, d_z)
+        # expand mu_z, std_z w.r.t. n_marg
+        mu_z = mu_z[:, :, None, :]
+        mu_z = mu_z.expand(n_tsk, n_ls, n_marg, d_z)
+        std_z = std_z[:, :, None, :]
+        std_z = std_z.expand(n_tsk, n_ls, n_marg, d_z)
 
-            eps = self._rng.randn(*mu_z.shape)
-            eps = torch.tensor(eps, dtype=torch.float32).to(self.device)
-            z = mu_z + eps * std_z
+        eps = self._rng.randn(*mu_z.shape)
+        eps = torch.tensor(eps, dtype=torch.float32).to(self.device)
+        z = mu_z + eps * std_z
 
-            mu_y, std_y = self.decoder.decode(
-                x=x, z=z, mu_z=mu_z, cov_z=cov_z
-            )  # (n_tsk, n_ls, n_marg, n_tst, d_y)
+        mu_y, std_y = self.decoder.decode(
+            x=x, z=z, mu_z=mu_z, cov_z=cov_z
+        )  # (n_tsk, n_ls, n_marg, n_tst, d_y)
 
         assert mu_y.ndim == 5 and std_y.ndim == 5
 
@@ -1378,110 +1141,6 @@ class NeuralProcess:
         mu_y, std_y = mu_y.cpu().numpy(), std_y.cpu().numpy()
 
         return mu_y, std_y**2  # ([n_tsk,], [n_samples], n_pts, d_y)
-
-    @torch.no_grad()
-    def predict_importance_weights(
-        self, x: np.ndarray, task_ctx: MetaLearningTask, n_marg: int
-    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-        assert not self._config["predictions_are_deterministic"]
-
-        # prepare x
-        has_tsk_dim = x.ndim == 3
-        x = self._prepare_data_for_testing(x)
-        x = self._normalize_x(x)
-        if x.shape[0] > 1:
-            raise NotImplementedError  # not implemented for more than one task
-
-        # check input data
-        x_ctx, y_ctx = task_ctx.x, task_ctx.y
-        self._check_data_shapes(x=x)
-        self._check_data_shapes(x=x_ctx, y=y_ctx)
-
-        # prepare x_ctx and y_ctx
-        x_ctx = self._prepare_data_for_testing(x_ctx)
-        y_ctx = self._prepare_data_for_testing(y_ctx)
-        x_ctx = self._normalize_x(x_ctx)
-        y_ctx = self._normalize_y(y_ctx)
-
-        # read out prior latent state
-        ls_prior = self.aggregator.initial_latent_state
-        mu_z_prior = ls_prior[0][:, None, :]
-        cov_z_prior = ls_prior[1][:, None, :]
-
-        # read out posterior latent state
-        ls_posterior = self.aggregator.last_latent_state
-        mu_z_posterior = ls_posterior[0][:, None, :]
-        cov_z_posterior = ls_posterior[1][:, None, :]
-
-        # shapes
-        n_tgt = x.shape[1]
-        n_ls = mu_z_posterior.shape[1]
-
-        # obtain predictions (use same sample set for both tgt and ctx)
-        all_x = torch.cat((x, x_ctx), dim=1)
-        all_mu_y, all_std_y, z = self._predict(
-            all_x,
-            mu_z_posterior,
-            cov_z_posterior,
-            n_marg=n_marg,
-            return_latent_samples=True,
-        )
-        # all_mu_y, all_std_y shape = (n_tsk, n_ls, n_marg, n_tst, d_y)
-        # z shape = (n_tsk, n_ls, n_marg, d_z)
-        mu_y, mu_y_ctx = all_mu_y[:, :, :, :n_tgt, :], all_mu_y[:, :, :, n_tgt:, :]
-        std_y, std_y_ctx = (
-            all_std_y[:, :, :, :n_tgt, :],
-            all_std_y[:, :, :, n_tgt:, :],
-        )
-
-        # add latent state and marginalization dimension to y-values
-        y_ctx = y_ctx[:, None, None, :, :].expand(-1, n_ls, n_marg, -1, -1)
-
-        # compute log-likelihood of context datapoints
-        gaussian_ctx = torch.distributions.Normal(mu_y_ctx, std_y_ctx)
-        log_p_ctx = gaussian_ctx.log_prob(y_ctx)  # (n_tsk, n_ls, n_marg, n_ctx, d_y)
-
-        # sum log-likelihood of context datapoints over output and datapoint dimension
-        #  for empty context sets this yields log_p_ctx = 0, i.e., p_ctx = 1 which is
-        #  what we want in order to arrive at log_w_norm = log(1/S)
-        log_p_ctx = torch.sum(log_p_ctx, dim=(-2, -1))  # (n_tsk, n_ls, n_marg)
-
-        # compute normalized log-importance weights
-        log_w_norm = self._log_normalized_importance_weights_true_np(
-            z=z,
-            mu_z_prior=mu_z_prior,
-            cov_z_prior=cov_z_prior,
-            mu_z_posterior=mu_z_posterior,
-            cov_z_posterior=cov_z_posterior,
-            log_p_y_ctx=log_p_ctx,
-        )  # (n_tsk, n_ls, n_marg)
-
-        # denormalize the predictions
-        mu_y = self._denormalize_mu_y(mu_y)  # (n_tsk, n_ls, n_marg, n_tst, d_y)
-        std_y = self._denormalize_std_y(std_y)  # (n_tsk, n_ls, n_marg, n_tst, d_y)
-
-        # check that target and context data are consistent
-        if has_tsk_dim and mu_y.shape[0] != x.shape[0]:
-            raise NotImplementedError(
-                "Target and context data have different numbers of tasks!"
-            )
-
-        # squeeze latent state dimension (this is always singleton here)
-        mu_y, std_y = mu_y.squeeze(1), std_y.squeeze(1)
-        log_w_norm = log_w_norm.squeeze(1)
-
-        # squeeze task dimension (if singleton)
-        if not has_tsk_dim:
-            mu_y = mu_y.squeeze(0)
-            std_y = std_y.squeeze(0)
-            log_w_norm = log_w_norm.squeeze(0)
-        mu_y, std_y = mu_y.numpy(), std_y.numpy()
-        log_w_norm = log_w_norm.numpy()
-
-        # shapes:
-        #  mu_y, std_y ** 2: ([n_tsk,], n_marg, n_pts, d_y)
-        #  log_w_norm: ([n_tsk], n_marg)
-        return mu_y, std_y**2, log_w_norm
 
     @torch.no_grad()
     def adapt(self, x: np.ndarray, y: np.ndarray) -> None:
