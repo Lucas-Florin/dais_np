@@ -153,3 +153,9 @@ cython_debug/
 
 scripts/log/
 .DS_Store
+
+## Visual Studio Code
+.vscode/
+
+## Experiments
+experiments/
