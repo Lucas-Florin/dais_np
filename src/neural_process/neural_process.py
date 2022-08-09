@@ -931,7 +931,7 @@ class NeuralProcess:
         # compute log-likelihood for all datapoints
         
         
-        ll = differentiable_annealed_importance_sampling(
+        ll, _ = differentiable_annealed_importance_sampling(
             initial_z,
             log_posterior,
             log_prior,
