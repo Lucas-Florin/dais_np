@@ -133,10 +133,12 @@ def main():
     # training
     config["n_tasks_train"] = int(2**16)
     config["validation_interval"] = config["n_tasks_train"] // 4
-    config["device"] = "cuda"
+    config["device"] = "cpu"
     config["adam_lr"] = 1e-4
     config["batch_size"] = config["n_task_meta"]
     config["n_samples"] = 16
+    config["n_annealing_steps"] = 10
+    config['dais_step_size'] = 0.08
     config["n_context"] = (
         config["n_datapoints_per_task_test"],
         config["n_datapoints_per_task_test"],
@@ -162,6 +164,8 @@ def main():
         adam_lr=config["adam_lr"],
         batch_size=config["batch_size"],
         n_samples=config["n_samples"],
+        n_annealing_steps=config["n_annealing_steps"],
+        dais_step_size=config['dais_step_size']
     )
     pprint(model._config)
 
@@ -208,6 +212,7 @@ def main():
         fig=fig,
         axes=axes,
     )
+    plt.savefig('experiments/fig.png')
     plt.show()
 
 

@@ -35,7 +35,7 @@ class NeuralProcess:
     _f_settings = "000_settings.txt"
     _f_n_tasks_seen = "000_n_tasks_seen.txt"
     _available_aggregator_types = ["BA", "MA"]
-    _available_loss_types = ["VI", "MC"]
+    _available_loss_types = ["VI", "MC", "DAIS"]
     _available_input_mlp_std_y = ["xz", "x", "z", "cov_z", ""]
 
     def __init__(
@@ -58,6 +58,8 @@ class NeuralProcess:
         adam_lr: float = 1e-4,
         batch_size: int = 16,
         n_samples: int = 16,
+        n_annealing_steps: int = 10,
+        dais_step_size: float = 0.08,
     ):
         # build config
         self._config = self._build_config(
@@ -79,6 +81,8 @@ class NeuralProcess:
             adam_lr=adam_lr,
             batch_size=batch_size,
             n_samples=n_samples,
+            n_annealing_steps=n_annealing_steps,
+            dais_step_size=dais_step_size
         )
 
         # logging
@@ -156,6 +160,8 @@ class NeuralProcess:
         adam_lr: float,
         batch_size: int,
         n_samples: int,
+        n_annealing_steps: int,
+        dais_step_size: float,
     ) -> dict:
         config = {
             "logpath": logpath,
@@ -226,8 +232,12 @@ class NeuralProcess:
             aggregator_kwargs = {}
 
         # loss_kwargs
-        if config["loss_type"] == "MC":
-            loss_kwargs = {"n_marg": n_samples}
+        if config["loss_type"] in {"MC", "DAIS"}:
+            loss_kwargs = {
+                "n_marg": n_samples,
+                "n_steps": n_annealing_steps,
+                'step_size': dais_step_size,
+            }
         else:  # loss_type == "VI"
             loss_kwargs = {}
 
@@ -626,6 +636,8 @@ class NeuralProcess:
                     mu_z_ctx=mu_z_ctx,
                     cov_z_ctx=cov_z_ctx,
                     n_marg=loss_kwargs["n_marg"],
+                    n_steps=loss_kwargs['n_steps'],
+                    step_size=loss_kwargs['step_size'],
                 )
             elif loss_type == "VI":
                 loss = loss - self._elbo_np(
@@ -789,7 +801,7 @@ class NeuralProcess:
         return ll
     
     
-    def _log_marg_lhd_np_dais(self, x_tgt, y_tgt, mu_z_ctx, cov_z_ctx, n_marg):
+    def _log_marg_lhd_np_dais(self, x_tgt, y_tgt, mu_z_ctx, cov_z_ctx, n_marg, n_steps=10, step_size=0.08):
         assert x_tgt.ndim == y_tgt.ndim == 3  # (n_tsk, n_tst, d_x/d_y)
         assert x_tgt.nelement() != 0
         assert y_tgt.nelement() != 0
@@ -847,8 +859,8 @@ class NeuralProcess:
             initial_z,
             log_posterior,
             log_prior,
-            n_steps=10,
-            step_size=0.08,
+            n_steps=n_steps,
+            step_size=step_size,
         )
 
         # sum log-likelihood over output and datapoint dimension
