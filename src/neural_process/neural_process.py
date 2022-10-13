@@ -375,8 +375,8 @@ class NeuralProcess:
         with open(os.path.join(self._logpath, self._f_settings), "w") as f:
             yaml.safe_dump(self._config, f)
 
-    def _load_config_from_file(self):
-        with open(os.path.join(self._logpath, self._f_settings), "r") as f:
+    def _load_config_from_file(self, load_path: str = None):
+        with open(os.path.join(self._logpath if load_path is None else load_path, self._f_settings), "r") as f:
             config = yaml.safe_load(f)
 
         return config
@@ -385,15 +385,15 @@ class NeuralProcess:
         with open(os.path.join(self._logpath, self._f_n_tasks_seen), "w") as f:
             yaml.safe_dump(self._n_meta_tasks_seen, f)
 
-    def _load_n_meta_tasks_seen_from_file(self):
-        with open(os.path.join(self._logpath, self._f_n_tasks_seen), "r") as f:
+    def _load_n_meta_tasks_seen_from_file(self, load_path: str = None):
+        with open(os.path.join(self._logpath if load_path is None else load_path, self._f_n_tasks_seen), "r") as f:
             epoch = yaml.safe_load(f)
 
         return epoch
 
-    def _load_weights_from_file(self):
+    def _load_weights_from_file(self, load_path: str = None):
         for module in self._modules:
-            module.load_weights(self._logpath, self._n_meta_tasks_seen)
+            module.load_weights(self._logpath if load_path is None else load_path, self._n_meta_tasks_seen)
 
     def _write_normalizers_to_file(self):
         # do this only once right at the beginning
@@ -406,8 +406,8 @@ class NeuralProcess:
         with open(os.path.join(self._logpath, self._f_normalizers), "w") as f:
             yaml.safe_dump(normalizers_as_lists, f)
 
-    def _load_normalizers_from_file(self):
-        with open(os.path.join(self._logpath, self._f_normalizers), "r") as f:
+    def _load_normalizers_from_file(self, load_path: str = None):
+        with open(os.path.join(self._logpath if load_path is None else load_path, self._f_normalizers), "r") as f:
             self._normalizers = yaml.safe_load(f)
         for (key, val) in self._normalizers.items():
             self._normalizers[key] = torch.tensor(val, device=self.device)
@@ -658,16 +658,21 @@ class NeuralProcess:
 
     def save_model(self):
         self._logger.info("Saving model...")
+        self._logger.info(self._logpath)
         for module in self._modules:
             module.save_weights(self._logpath, self._n_meta_tasks_seen)
         self._write_n_meta_tasks_seen_to_file()
 
-    def load_model(self, load_n_meta_tasks_seen: int = -1) -> None:
+    def load_model(self, load_n_meta_tasks_seen: int = -1, load_path: str = None) -> None:
         assert isinstance(load_n_meta_tasks_seen, int)
 
         # load settings
-        config = self._load_config_from_file()
-        assert config == self._config
+        config = self._load_config_from_file(load_path)
+        config_a = copy.deepcopy(config)
+        config_b = copy.deepcopy(self._config)
+        del config_b['logpath']
+        del config_a['logpath']
+        assert config_a == config_b
 
         # load n_meta_tasks_seen
         if load_n_meta_tasks_seen == -1:  # load latest checkpoint
@@ -681,8 +686,8 @@ class NeuralProcess:
 
         # load architecture
         self._create_architecture()
-        self._load_weights_from_file()
-        self._load_normalizers_from_file()
+        self._load_weights_from_file(load_path)
+        self._load_normalizers_from_file(load_path)
         self._set_device(self.device)
 
         # initialize random number generator
