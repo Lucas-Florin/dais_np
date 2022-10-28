@@ -1085,17 +1085,16 @@ class NeuralProcess:
         ) as pbar:
             pbar.update(self._n_meta_tasks_seen)
             while self._n_meta_tasks_seen < n_tasks_train:
-                if callback is not None:
-                    callback(
-                        n_meta_tasks_seen=self._n_meta_tasks_seen,
-                        np_model=self,
-                        metrics={"loss_meta": loss_meta}
-                        if loss_meta is not None
-                        else None,
-                    )
                 if validate_now():
                     loss_val = validation_loss()
                 loss_meta = optimizer_step()
+                if callback is not None:
+                    callback_data = {"loss_meta": loss_meta, 'loss_val': loss_val} if loss_meta is not None else None
+                    callback(
+                        n_meta_tasks_seen=self._n_meta_tasks_seen,
+                        np_model=self,
+                        metrics=callback_data,
+                    )
                 pbar.set_postfix(
                     {"loss_meta": loss_meta, "loss_val": loss_val}, refresh=False
                 )
@@ -1147,9 +1146,9 @@ class NeuralProcess:
         # squeeze latent state dimension (this is always singleton here)
         mu_y, std_y = mu_y.squeeze(1), std_y.squeeze(1)  # squeeze n_ls dimension
 
-        # squeeze marginalization dimension (this is always singleton here)
-        if n_samples == 1:
-            mu_y, std_y = mu_y.squeeze(1), std_y.squeeze(1)  # squeeze n_marg dimension
+        # # squeeze marginalization dimension (this is always singleton here)
+        # if n_samples == 1:
+        #     mu_y, std_y = mu_y.squeeze(1), std_y.squeeze(1)  # squeeze n_marg dimension
 
         # squeeze task dimension (if singleton)
         if not has_tsk_dim:
