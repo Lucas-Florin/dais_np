@@ -31,7 +31,6 @@ from neural_process.dais import differentiable_annealed_importance_sampling
 
 
 class NeuralProcess:
-    _f_normalizers = "000_normalizers.txt"
     _f_settings = "000_settings.txt"
     _f_n_tasks_seen = "000_n_tasks_seen.txt"
     _available_aggregator_types = ["BA", "MA"]
@@ -54,6 +53,7 @@ class NeuralProcess:
         n_hidden_layers: int = 2,
         n_hidden_units: int = 16,
         decoder_output_scale: float = 1.0,
+        decoder_output_scale_min: Optional[float] = None,
         device: str = "cpu",
         adam_lr: float = 1e-4,
         batch_size: int = 16,
@@ -77,6 +77,7 @@ class NeuralProcess:
             n_hidden_layers=n_hidden_layers,
             n_hidden_units=n_hidden_units,
             decoder_output_scale=decoder_output_scale,
+            decoder_output_scale_min=decoder_output_scale_min,
             device=device,
             adam_lr=adam_lr,
             batch_size=batch_size,
@@ -111,7 +112,6 @@ class NeuralProcess:
         self._optimizer = None
         self._create_optimizer()
 
-        self._normalizers = {"x_mu": None, "x_std": None, "y_mu": None, "y_std": None}
         self._logger.info("Initialized new model of type {}...".format(type(self)))
 
     @staticmethod
@@ -156,6 +156,7 @@ class NeuralProcess:
         n_hidden_units: int,
         latent_prior_scale: float,
         decoder_output_scale: float,
+        decoder_output_scale_min: float,
         device: str,
         adam_lr: float,
         batch_size: int,
@@ -172,6 +173,7 @@ class NeuralProcess:
             "aggregator_type": aggregator_type,
             "loss_type": loss_type,
             "input_mlp_std_y": input_mlp_std_y,
+            "decoder_output_scale_min": decoder_output_scale_min,
             "f_act": f_act,
             "n_hidden_layers": n_hidden_layers,
             "n_hidden_units": n_hidden_units,
@@ -197,6 +199,7 @@ class NeuralProcess:
         decoder_kwargs = {
             "mlp_layers_mu_y": network_arch,
             "input_mlp_std_y": config["input_mlp_std_y"],
+            "decoder_output_scale_min": config["decoder_output_scale_min"],
         }
 
         decoder_kwargs["arch"] = "separate_networks"
@@ -273,21 +276,6 @@ class NeuralProcess:
                 assert isinstance(module.parameters(), types.GeneratorType)
                 parameters += list(module.parameters())
         return parameters
-
-    @property
-    def _normalizers_available(self):
-        res = True
-
-        if self._normalizers["x_mu"] is None:
-            res = False
-        if self._normalizers["x_std"] is None:
-            res = False
-        if self._normalizers["y_mu"] is None:
-            res = False
-        if self._normalizers["y_std"] is None:
-            res = False
-
-        return res
 
     def _configure_logger(self):
         """
@@ -393,117 +381,7 @@ class NeuralProcess:
 
     def _load_weights_from_file(self, load_path: str = None):
         for module in self._modules:
-            module.load_weights(self._logpath if load_path is None else load_path, self._n_meta_tasks_seen)
-
-    def _write_normalizers_to_file(self):
-        # do this only once right at the beginning
-        assert self._n_meta_tasks_seen == 0
-
-        normalizers_as_lists = self._normalizers.copy()
-        for (key, val) in normalizers_as_lists.items():
-            normalizers_as_lists[key] = val.to("cpu").tolist()
-
-        with open(os.path.join(self._logpath, self._f_normalizers), "w") as f:
-            yaml.safe_dump(normalizers_as_lists, f)
-
-    def _load_normalizers_from_file(self, load_path: str = None):
-        with open(os.path.join(self._logpath if load_path is None else load_path, self._f_normalizers), "r") as f:
-            self._normalizers = yaml.safe_load(f)
-        for (key, val) in self._normalizers.items():
-            self._normalizers[key] = torch.tensor(val, device=self.device)
-
-    def _determine_normalizers(self, benchmark, n_tasks=1000):
-        # check that we've not already determined normalizers
-        assert not self._normalizers_available
-        self._logger.info(
-            "Computing normalizers on data from {:d} tasks...".format(n_tasks)
-        )
-
-        # create dataloader
-        dataloader = DataLoader(
-            dataset=MetaLearningDataset(benchmark),
-            batch_size=n_tasks,
-            collate_fn=lambda task_list: self._collate_batch(task_list),
-        )
-
-        # load n_tasks tasks
-        x, y = next(iter(dataloader))
-
-        # compute normalizers across (n_task, n_datapoints_per_task) dimensions
-        self._normalizers["x_mu"] = x.double().mean(dim=(0, 1)).float().to(self.device)
-        self._normalizers["y_mu"] = y.double().mean(dim=(0, 1)).float().to(self.device)
-        self._normalizers["x_std"] = x.double().std(dim=(0, 1)).float().to(self.device)
-        self._normalizers["y_std"] = y.double().std(dim=(0, 1)).float().to(self.device)
-
-        self._write_normalizers_to_file()
-
-    def _normalize_x(self, x):
-        assert x.shape[-1] == self._normalizers["x_mu"].shape[0]
-        if not self._normalizers_available:
-            raise RuntimeError(
-                "Normalizers not available! Maybe model has not been trained yet?"
-            )
-
-        n_dim_to_expand = x.ndim - 1
-        # broadcast normalizers to data shape
-        expander = (None,) * n_dim_to_expand + (Ellipsis,)
-        normalizer_mu = self._normalizers["x_mu"][expander].to(self.device)
-        normalizer_std = self._normalizers["x_std"][expander].to(self.device)
-
-        x_normalized = x - normalizer_mu
-        if (normalizer_std != 0.0).all():
-            x_normalized /= normalizer_std
-
-        return x_normalized
-
-    def _normalize_y(self, y):
-        assert y.shape[-1] == self._normalizers["y_mu"].shape[0]
-        if not self._normalizers_available:
-            raise RuntimeError(
-                "Normalizers not available! Maybe model has not been trained yet?"
-            )
-
-        n_dim_to_expand = y.ndim - 1
-        expander = (None,) * n_dim_to_expand + (Ellipsis,)
-        normalizer_mu = self._normalizers["y_mu"][expander].to(self.device)
-        normalizer_std = self._normalizers["y_std"][expander].to(self.device)
-
-        y_normalized = y - normalizer_mu
-        if (normalizer_std != 0.0).all():
-            y_normalized /= normalizer_std
-
-        return y_normalized
-
-    def _denormalize_mu_y(self, mu_y):
-        assert mu_y.shape[-1] == self._normalizers["y_mu"].shape[0]
-
-        n_dim_to_expand = mu_y.ndim - 1
-        expander = (None,) * n_dim_to_expand + (Ellipsis,)
-        normalizer_mu = self._normalizers["y_mu"][expander]
-        normalizer_std = self._normalizers["y_std"][expander]
-
-        normalizer_mu = normalizer_mu.to(self.device)
-        normalizer_std = normalizer_std.to(self.device)
-
-        mu_y_denormalized = mu_y
-        if (normalizer_std != 0.0).all():
-            mu_y_denormalized *= normalizer_std
-        mu_y_denormalized += normalizer_mu
-
-        return mu_y_denormalized.reshape(mu_y.shape)
-
-    def _denormalize_std_y(self, std_y):
-        assert std_y.shape[-1] == self._normalizers["y_std"].shape[0]
-
-        n_dim_to_expand = std_y.ndim - 1
-        expander = (None,) * n_dim_to_expand + (Ellipsis,)
-        normalizer_std = self._normalizers["y_std"][expander]
-
-        std_y_denormalized = std_y
-        if (normalizer_std != 0.0).all():
-            std_y_denormalized *= normalizer_std
-
-        return std_y_denormalized.reshape(std_y.shape)
+            module.load_weights(self._logpath, self._n_meta_tasks_seen)
 
     def _seed(self, seed: int) -> None:
         self._rng.seed(seed=seed)
@@ -687,7 +565,6 @@ class NeuralProcess:
         # load architecture
         self._create_architecture()
         self._load_weights_from_file(load_path)
-        self._load_normalizers_from_file(load_path)
         self._set_device(self.device)
 
         # initialize random number generator
@@ -724,18 +601,20 @@ class NeuralProcess:
         x_ctx = x_all[:, idx_pts[:n_ctx], :]
         y_ctx = y_all[:, idx_pts[:n_ctx], :]
 
-        if not (loss_type == "VI"):
-            # use remaining points as test points
-            x_tgt = x_all[:, idx_pts[n_ctx:], :]
-            y_tgt = y_all[:, idx_pts[n_ctx:], :]
+        # determine target points
+        if not (loss_type == "MCIW" or loss_type == "IWMCIW" or loss_type == "VI"):
+            # use all points as test points
+            x_tgt = x_all[:, idx_pts, :]
+            y_tgt = y_all[:, idx_pts, :]
             latent_obs_all = None  # not necessary
         else:  # loss_type == "VI"
-            # sample a test set from the remaining points
-            n_tst = self._rng.randint(
-                low=1, high=n_all - n_ctx + 1, size=(1,)
-            ).squeeze()
-            x_tgt = x_all[:, idx_pts[n_ctx : n_ctx + n_tst], :]
-            y_tgt = y_all[:, idx_pts[n_ctx : n_ctx + n_tst], :]
+            # sample a test set size between [n_ctx + 1, n_all]
+            assert n_ctx < n_all, "Context set must not comprise all data!"
+            low = n_ctx + 1
+            high = n_all + 1  # exclusive
+            n_tst = self._rng.randint(low=low, high=high, size=(1,)).squeeze()
+            x_tgt = x_all[:, idx_pts[:n_tst], :]
+            y_tgt = y_all[:, idx_pts[:n_tst], :]
             latent_obs_all = self.encoder.encode(x_all, y_all)
 
         return x_ctx, y_ctx, x_tgt, y_tgt, latent_obs_all
@@ -939,6 +818,27 @@ class NeuralProcess:
 
         return elbo
 
+    def _sample_z(self, mu_z, cov_z, n_samples):
+        # read out sizes
+        n_tsk = mu_z.shape[0]
+        n_ls = mu_z.shape[1]
+
+        # expand mu_z, std_z w.r.t. n_marg
+        mu_z = mu_z[:, :, None, :]
+        mu_z = mu_z.expand(n_tsk, n_ls, n_samples, self.settings["d_z"])
+        std_z = torch.sqrt(cov_z)
+        std_z = std_z[:, :, None, :]
+        std_z = std_z.expand(n_tsk, n_ls, n_samples, self.settings["d_z"])
+
+        # sample z
+        eps = self._rng.randn(*mu_z.shape)
+        eps = torch.tensor(eps, dtype=torch.float32).to(self.device)
+        z = mu_z + eps * std_z
+
+        # check output
+        assert z.shape == (n_tsk, n_ls, n_samples, self.settings["d_z"])
+        return z
+
     def _predict(self, x, mu_z, cov_z, n_marg, return_latent_samples=False):
         assert x.ndim == 3  # (n_tsk, n_tst, d_x)
         assert mu_z.ndim == 3  # (n_tsk, n_ls, d_z)
@@ -950,18 +850,7 @@ class NeuralProcess:
         n_ls = mu_z.shape[1]
         d_z = mu_z.shape[2]
 
-        std_z = torch.sqrt(cov_z)
-
-        # expand mu_z, std_z w.r.t. n_marg
-        mu_z = mu_z[:, :, None, :]
-        mu_z = mu_z.expand(n_tsk, n_ls, n_marg, d_z)
-        std_z = std_z[:, :, None, :]
-        std_z = std_z.expand(n_tsk, n_ls, n_marg, d_z)
-
-        eps = self._rng.randn(*mu_z.shape)
-        eps = torch.tensor(eps, dtype=torch.float32).to(self.device)
-        z = mu_z + eps * std_z
-
+        z = self._sample_z(mu_z=mu_z, cov_z=cov_z, n_samples=n_marg)
         mu_y, std_y = self.decoder.decode(
             x=x, z=z, mu_z=mu_z, cov_z=cov_z
         )  # (n_tsk, n_ls, n_marg, n_tst, d_y)
@@ -1009,9 +898,6 @@ class NeuralProcess:
             with torch.no_grad():
                 x_val, y_val = next(iter(dataloader_val))
 
-                # normalize
-                x_val, y_val = self._normalize_x(x_val), self._normalize_y(y_val)
-
                 # compute validation loss
                 loss = self._compute_loss(x=x_val, y=y_val, mode="val")
                 loss = loss.cpu().numpy().item()
@@ -1027,9 +913,6 @@ class NeuralProcess:
             if self._n_meta_tasks_seen + n_tasks_in_batch > n_tasks_train:
                 n_tasks_remaining = n_tasks_train - self._n_meta_tasks_seen
                 x_meta, y_meta = x_meta[:n_tasks_remaining], y_meta[:n_tasks_remaining]
-
-            # normalize
-            x_meta, y_meta = self._normalize_x(x_meta), self._normalize_y(y_meta)
 
             # reset gradient
             self._optimizer.zero_grad()
@@ -1054,11 +937,6 @@ class NeuralProcess:
                 n_tasks_train, max(n_tasks_train - self._n_meta_tasks_seen, 0)
             )
         )
-
-        # determine normalizers on metadata before starting training
-        # (normalizers could be already available if this fct was called with 0 iters)
-        if self._n_meta_tasks_seen == 0 and not self._normalizers_available:
-            self._determine_normalizers(benchmark=benchmark_meta)
 
         # set device for training
         self._set_device(self.device)
@@ -1117,7 +995,6 @@ class NeuralProcess:
         # prepare x
         has_tsk_dim = x.ndim == 3
         x = self._prepare_data_for_testing(x)
-        x = self._normalize_x(x)
 
         # read out last latent state
         ls = self.aggregator.last_latent_state
@@ -1126,16 +1003,6 @@ class NeuralProcess:
 
         # obtain predictions
         mu_y, std_y = self._predict(x, mu_z, cov_z, n_marg=n_samples)
-
-        # denormalize the predictions
-        mu_y = self._denormalize_mu_y(mu_y)  # (n_tsk, n_ls, n_marg, n_tst, d_y)
-        if (
-            self._config["decoder_kwargs"]["input_mlp_std_y"] == ""
-            and self._config["decoder_kwargs"]["global_std_y_is_learnable"]
-        ):
-            raise NotImplementedError  # think about denormalization
-        if not self._config["decoder_kwargs"]["input_mlp_std_y"] == "":
-            std_y = self._denormalize_std_y(std_y)  # (n_tsk, n_ls, n_marg, n_tst, d_y)
 
         # check that target and context data are consistent
         if has_tsk_dim and mu_y.shape[0] != x.shape[0]:
@@ -1165,11 +1032,67 @@ class NeuralProcess:
         # prepare x and y
         x = self._prepare_data_for_testing(x)
         y = self._prepare_data_for_testing(y)
-        x = self._normalize_x(x)
-        y = self._normalize_y(y)
 
         # accumulate data in aggregator
         self.aggregator.reset(n_tsk=x.shape[0])
         if x.shape[1] > 0:
             latent_obs = self.encoder.encode(x=x, y=y)
             self.aggregator.update(latent_obs)
+
+    @torch.no_grad()
+    def sample_z(self, n_samples):
+        # check input
+        assert self.settings["loss_type"] != "PB"
+
+        # read out last latent state
+        ls = self.aggregator.last_latent_state
+        mu_z = ls[0][:, None, :]
+        cov_z = ls[1][:, None, :] if ls[1] is not None else None
+
+        # read out sizes
+        n_tsk = mu_z.shape[0]
+        n_ls = mu_z.shape[1]
+        assert n_ls == 1
+
+        # sample z
+        z = self._sample_z(mu_z=mu_z, cov_z=cov_z, n_samples=n_samples)
+
+        # squeeze n_ls dimension
+        z = z.squeeze(1)
+
+        # check output
+        z = z.numpy()
+        assert z.shape == (n_tsk, n_samples, self.settings["d_z"])
+        return z
+
+    @torch.no_grad()
+    def predict_at_z(self, x, z):
+        # check input
+        assert self.settings["loss_type"] != "PB"
+        n_tsk = x.shape[0]
+        n_pts = x.shape[1]
+        n_samples = z.shape[1]
+        assert x.shape == (n_tsk, n_pts, self.settings["d_x"])
+        assert z.shape == (n_tsk, n_samples, self.settings["d_z"])
+
+        # check input data
+        self._check_data_shapes(x=x)
+
+        # prepare x and z
+        x = self._prepare_data_for_testing(x)
+        z = torch.Tensor(z, device=self.device)
+        z = z[:, None, :, :]  # add dummy ls dimension
+
+        # predict
+        mu_y, std_y = self.decoder.decode(x=x, z=z)
+        assert mu_y.shape == (n_tsk, 1, n_samples, n_pts, self.settings["d_y"])
+        assert std_y.shape == (n_tsk, 1, n_samples, n_pts, self.settings["d_y"])
+
+        # squeeze latent state dimension (this is always singleton here)
+        mu_y, std_y = mu_y.squeeze(1), std_y.squeeze(1)  # squeeze n_ls dimension
+
+        # check output
+        mu_y, std_y = mu_y.numpy(), std_y.numpy()
+        assert mu_y.shape == (n_tsk, n_samples, n_pts, self.settings["d_y"])
+        assert std_y.shape == (n_tsk, n_samples, n_pts, self.settings["d_y"])
+        return mu_y, std_y**2

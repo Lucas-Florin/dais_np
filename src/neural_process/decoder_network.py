@@ -20,6 +20,9 @@ class DecoderNetworkSamples:
         # process std_y_network/global_std_y
         self.input_mlp_std_y = kwargs["input_mlp_std_y"]
         self.mlp_layers_std_y = kwargs.get("mlp_layers_std_y", None)
+        self.std_y_lower_bound = kwargs.get("decoder_output_scale_min", None)
+        if self.std_y_lower_bound is None:
+            self.std_y_lower_bound = 1e-4
         global_std_y_is_learnable = kwargs.get("global_std_y_is_learnable", None)
         global_std_y_init = kwargs.get("global_std_y", None)
         # check arguments are valid
@@ -56,7 +59,12 @@ class DecoderNetworkSamples:
                 raise ValueError("std_y must be scalar or vector.")
 
             # apply inverse output transform
-            self._global_std_y = inv_output_trafo(global_std_y_init, lower_bound=1e-4)
+            assert (
+                torch.all(global_std_y_init >= self.std_y_lower_bound)
+            ), "Global std y has to be initialized in accordance to std y lower bound!"
+            self._global_std_y = inv_output_trafo(
+                global_std_y_init, lower_bound=self.std_y_lower_bound
+            )
             self.learnable_std_y = global_std_y_is_learnable
 
         self.mu_y_net = self.std_y_net = self.mu_y_std_y_net = None
@@ -68,9 +76,11 @@ class DecoderNetworkSamples:
         if self.input_mlp_std_y != "":
             return None
         if self.learnable_std_y:
-            return output_trafo(self.std_y_net.value, lower_bound=1e-4)
+            return output_trafo(
+                self.std_y_net.value, lower_bound=self.std_y_lower_bound
+            )
         else:
-            return output_trafo(self._global_std_y, lower_bound=1e-4)
+            return output_trafo(self._global_std_y, lower_bound=self.std_y_lower_bound)
 
     def to(self, device):
         if self.arch == "separate_networks":
@@ -208,7 +218,7 @@ class DecoderNetworkSamples:
             std_y = mu_cov_y[:, self.d_y :]
 
         # deparametrize
-        std_y = output_trafo(std_y, lower_bound=1e-4)
+        std_y = output_trafo(std_y, lower_bound=self.std_y_lower_bound)
 
         return mu_y, std_y
 
