@@ -381,7 +381,7 @@ class NeuralProcess:
 
     def _load_weights_from_file(self, load_path: str = None):
         for module in self._modules:
-            module.load_weights(self._logpath, self._n_meta_tasks_seen)
+            module.load_weights(self._logpath if load_path is None else load_path, self._n_meta_tasks_seen)
 
     def _seed(self, seed: int) -> None:
         self._rng.seed(seed=seed)
