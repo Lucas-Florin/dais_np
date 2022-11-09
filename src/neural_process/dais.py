@@ -15,9 +15,9 @@ def get_schedule(num, rad=4):
     return (s - np.min(s)) / (np.max(s) - np.min(s))
 
 
-def differentiable_annealed_importance_sampling(s, log_likelihood, log_q, n_steps,
+def differentiable_annealed_importance_sampling(s:torch.Tensor, log_likelihood, log_q, n_steps,
         step_size, partial=False, gamma=0.9, mass_matrix=None, 
-        lrates=None, betas=None, block_grad=False, is_train=True):
+        lrates=None, betas=None, block_grad=False, is_train=True, rng:np.random.RandomState=None):
     """
     s: partcle state: n_particles x d
     """
@@ -35,11 +35,8 @@ def differentiable_annealed_importance_sampling(s, log_likelihood, log_q, n_step
 
     if mass_matrix is None:
         mass_matrix = torch.eye(dim, device=s.device)
-
-    pi = MultivariateNormal(
-        torch.zeros(dim, device=s.device),
-        mass_matrix
-    )
+    pi_mean = torch.zeros(dim, device=s.device)
+    pi = MultivariateNormal(pi_mean, mass_matrix)
     inverse_mass_matrix = torch.inverse(mass_matrix)
 
     # s.requires_grad = True
@@ -55,7 +52,15 @@ def differentiable_annealed_importance_sampling(s, log_likelihood, log_q, n_step
         return grad
 
     # sample initial momentum
-    v = pi.sample(n_particles)
+    def pi_sample(n_particles):
+        if rng is None:
+            eps = pi.sample(n_particles)
+        else:
+            eps = torch.tensor(rng.multivariate_normal(pi_mean, mass_matrix, n_particles), 
+                               dtype=s.dtype, device=s.device)
+        return eps
+    
+    v = pi_sample(n_particles)
 
     with torch.set_grad_enabled(is_train):
 
@@ -72,9 +77,9 @@ def differentiable_annealed_importance_sampling(s, log_likelihood, log_q, n_step
 
             if partial:
                 # partial_refreshment
-                v = gamma * v + math.sqrt(1 - math.pow(gamma, 2)) * pi.sample(n_particles)
+                v = gamma * v + math.sqrt(1 - math.pow(gamma, 2)) * pi_sample(n_particles)
             else:
-                v = pi.sample(n_particles)
+                v = pi_sample(n_particles)
 
         elbo = elbo + log_likelihood(s)
 

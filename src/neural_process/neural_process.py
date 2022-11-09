@@ -745,6 +745,7 @@ class NeuralProcess:
             log_prior,
             n_steps=n_steps,
             step_size=step_size,
+            rng=self._rng,
         )
 
         # sum log-likelihood over output and datapoint dimension
