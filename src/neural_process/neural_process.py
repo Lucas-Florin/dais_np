@@ -60,6 +60,7 @@ class NeuralProcess:
         n_samples: int = 16,
         n_annealing_steps: int = 10,
         dais_step_size: float = 0.08,
+        dais_partial: bool = False
     ):
         # build config
         self._config = self._build_config(
@@ -83,7 +84,8 @@ class NeuralProcess:
             batch_size=batch_size,
             n_samples=n_samples,
             n_annealing_steps=n_annealing_steps,
-            dais_step_size=dais_step_size
+            dais_step_size=dais_step_size,
+            dais_partial=dais_partial,
         )
 
         # logging
@@ -163,6 +165,7 @@ class NeuralProcess:
         n_samples: int,
         n_annealing_steps: int,
         dais_step_size: float,
+        dais_partial: False
     ) -> dict:
         config = {
             "logpath": logpath,
@@ -240,6 +243,7 @@ class NeuralProcess:
                 "n_marg": n_samples,
                 "n_steps": n_annealing_steps,
                 'step_size': dais_step_size,
+                'partial': dais_partial
             }
         else:  # loss_type == "VI"
             loss_kwargs = {}
@@ -516,6 +520,7 @@ class NeuralProcess:
                     n_marg=loss_kwargs["n_marg"],
                     n_steps=loss_kwargs['n_steps'],
                     step_size=loss_kwargs['step_size'],
+                    partial=loss_kwargs['partial'],
                 )
             elif loss_type == "VI":
                 loss = loss - self._elbo_np(
@@ -685,7 +690,7 @@ class NeuralProcess:
         return ll
     
     
-    def _log_marg_lhd_np_dais(self, x_tgt, y_tgt, mu_z_ctx, cov_z_ctx, n_marg, n_steps=10, step_size=0.08):
+    def _log_marg_lhd_np_dais(self, x_tgt, y_tgt, mu_z_ctx, cov_z_ctx, n_marg, n_steps=10, step_size=0.08, partial=False):
         assert x_tgt.ndim == y_tgt.ndim == 3  # (n_tsk, n_tst, d_x/d_y)
         assert x_tgt.nelement() != 0
         assert y_tgt.nelement() != 0
@@ -745,6 +750,7 @@ class NeuralProcess:
             log_prior,
             n_steps=n_steps,
             step_size=step_size,
+            partial=partial,
             rng=self._rng,
         )
 
