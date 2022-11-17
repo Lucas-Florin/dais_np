@@ -560,6 +560,11 @@ class NeuralProcess:
         config_b = copy.deepcopy(self._config)
         del config_b['logpath']
         del config_a['logpath']
+        
+        for k in set(config_a.keys()) | set(config_b.keys()):
+            assert k in config_a and k in config_b, f'key "{k}" not in config'
+            assert config_a[k] == config_b[k], \
+                    f'Values for key "{k}" are different: "{config_a[k]}" and "{config_b[k]}"'
         assert config_a == config_b
 
         # load n_meta_tasks_seen
