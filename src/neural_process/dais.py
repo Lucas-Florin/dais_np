@@ -16,7 +16,7 @@ def get_schedule(num, rad=4):
 
 
 def differentiable_annealed_importance_sampling(s:torch.Tensor, log_likelihood, log_q, n_steps,
-        step_size, partial=False, gamma=0.9, mass_matrix=None, 
+        step_size, partial=False, gamma=0.9, mass_matrix=None, clip_grad=None,
         lrates=None, betas=None, block_grad=False, is_train=True, rng:np.random.RandomState=None):
     """
     s: partcle state: n_particles x d
@@ -41,7 +41,7 @@ def differentiable_annealed_importance_sampling(s:torch.Tensor, log_likelihood, 
 
     # s.requires_grad = True
 
-    def log_annealed_prob(beta, s):
+    def log_annealed_prob(beta, s: torch.Tensor):
         return (1 - beta) * log_q(s) + beta * log_likelihood(s)
 
     def grad_log_annealed_prob(beta, s):
@@ -49,6 +49,9 @@ def differentiable_annealed_importance_sampling(s:torch.Tensor, log_likelihood, 
         with torch.enable_grad():
             s.requires_grad_()
             grad = autograd.grad(log_annealed_prob(beta, s).sum(), s, create_graph=is_train)[0]
+            if clip_grad is not None:
+                max_ = torch.prod(torch.tensor(s.shape)) * clip_grad # last dimension of mu_z
+                grad = torch.clamp(grad, -max_, max_)
         return grad
 
     # sample initial momentum
@@ -66,6 +69,7 @@ def differentiable_annealed_importance_sampling(s:torch.Tensor, log_likelihood, 
 
         elbo = - log_q(s)
         for k in range(1, n_steps+1):
+            assert not torch.any(s.isnan()), "Current state has nan values"
             elbo = elbo - pi.log_prob(v)
 
             # leapfrog
