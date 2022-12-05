@@ -24,14 +24,18 @@ def differentiable_annealed_importance_sampling(s:torch.Tensor, log_likelihood, 
     n_particles = s.shape[:-1]
     dim = s.shape[-1]
 
-    if n_steps > 0:
-        if lrates is None:
-            lrates = step_size * torch.ones(n_steps+1, device=s.device)
-        if betas is None:
-            # betas = torch.linspace(1.0/n_steps, 1.0, n_steps, device=s.device)
-            betas = get_schedule(n_steps+1)
-    else:
+    if n_steps == 0:
         return - log_q(s) + log_likelihood(s), s
+    
+    # if lrates is None:
+    #     lrates = step_size * torch.ones(n_steps+1, device=s.device)
+    if (type(step_size) is torch.Tensor or type(step_size) is np.ndarray) and len(step_size.shape) > 0:
+        assert step_size.shape == s.shape[:-1]
+        step_size = step_size[..., None]
+    
+    if betas is None:
+        # betas = torch.linspace(1.0/n_steps, 1.0, n_steps, device=s.device)
+        betas = get_schedule(n_steps+1)
 
     if mass_matrix is None:
         mass_matrix = torch.eye(dim, device=s.device)
@@ -73,9 +77,9 @@ def differentiable_annealed_importance_sampling(s:torch.Tensor, log_likelihood, 
             elbo = elbo - pi.log_prob(v)
 
             # leapfrog
-            s = s + lrates[k] / 2 * v @ inverse_mass_matrix
-            v = v + lrates[k] * grad_log_annealed_prob(betas[k], s)
-            s = s + lrates[k] / 2 * v @ inverse_mass_matrix
+            s = s + step_size / 2 * v @ inverse_mass_matrix
+            v = v + step_size * grad_log_annealed_prob(betas[k], s)
+            s = s + step_size / 2 * v @ inverse_mass_matrix
 
             elbo = elbo + pi.log_prob(v)
 
