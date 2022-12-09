@@ -60,6 +60,8 @@ class NeuralProcess:
         n_samples: int = 16,
         n_annealing_steps: int = 10,
         dais_step_size: float = 0.08,
+        dais_adapt_step_size_to_std_z: bool = False,
+        dais_scalar_step_size: bool = False,
         dais_partial: bool = False,
         dais_schedule: str = 'linear',
     ):
@@ -86,6 +88,8 @@ class NeuralProcess:
             n_samples=n_samples,
             n_annealing_steps=n_annealing_steps,
             dais_step_size=dais_step_size,
+            dais_adapt_step_size_to_std_z=dais_adapt_step_size_to_std_z,
+            dais_scalar_step_size=dais_scalar_step_size,
             dais_partial=dais_partial,
             dais_schedule=dais_schedule,
         )
@@ -167,7 +171,9 @@ class NeuralProcess:
         n_samples: int,
         n_annealing_steps: int,
         dais_step_size: float,
-        dais_partial: False,
+        dais_adapt_step_size_to_std_z: bool, 
+        dais_scalar_step_size: bool, 
+        dais_partial: bool,
         dais_schedule: str,
     ) -> dict:
         config = {
@@ -248,6 +254,8 @@ class NeuralProcess:
                 'step_size': dais_step_size,
                 'partial': dais_partial,
                 'schedule': dais_schedule,
+                'adapt_step_size_to_std_z': dais_adapt_step_size_to_std_z,
+                'scalar_step_size': dais_scalar_step_size,
             }
         else:  # loss_type == "VI"
             loss_kwargs = {}
@@ -524,6 +532,8 @@ class NeuralProcess:
                     n_marg=loss_kwargs["n_marg"],
                     n_steps=loss_kwargs['n_steps'],
                     step_size=loss_kwargs['step_size'],
+                    adapt_step_size_to_std_z=loss_kwargs['adapt_step_size_to_std_z'], 
+                    scalar_step_size=loss_kwargs['scalar_step_size'], 
                     partial=loss_kwargs['partial'],
                     schedule=loss_kwargs['schedule'],
                 )
@@ -701,7 +711,8 @@ class NeuralProcess:
     
     
     def _log_marg_lhd_np_dais(self, x_tgt, y_tgt, mu_z_ctx, cov_z_ctx, n_marg, 
-                              n_steps=10, step_size=0.08, partial=False, schedule='linear'):
+                              n_steps=10, step_size=0.08, adapt_step_size_to_std_z=False, scalar_step_size=False, 
+                              partial=False, schedule='linear'):
         assert x_tgt.ndim == y_tgt.ndim == 3  # (n_tsk, n_tst, d_x/d_y)
         assert x_tgt.nelement() != 0
         assert y_tgt.nelement() != 0
@@ -724,6 +735,13 @@ class NeuralProcess:
         mu_z_ctx = mu_z_ctx.expand(n_tsk, n_ls, n_marg, -1)
         cov_z_ctx = cov_z_ctx[:, :, None, :]
         cov_z_ctx = cov_z_ctx.expand(n_tsk, n_ls, n_marg, -1)
+
+        if adapt_step_size_to_std_z:
+            if scalar_step_size:
+                step_size = step_size * cov_z_ctx.mean()
+            else:
+                step_size = step_size * cov_z_ctx.mean(-1)
+            step_size = step_size.detach()
 
         eps = self._rng.randn(*mu_z_ctx.shape)
         eps = torch.tensor(eps, dtype=torch.float32).to(self.device)
@@ -762,7 +780,7 @@ class NeuralProcess:
             log_prior,
             n_steps=n_steps,
             step_size=step_size,
-            partial=partial,#
+            partial=partial,
             betas=betas,
             rng=self._rng,
         )
