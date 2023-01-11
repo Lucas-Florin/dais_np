@@ -63,6 +63,7 @@ class NeuralProcess:
         dais_adapt_step_size_to_std_z: bool = False,
         dais_scalar_step_size: bool = False,
         dais_partial: bool = False,
+        dais_partial_gamma: float = 0.9,
         dais_schedule: str = 'linear',
     ):
         # build config
@@ -91,6 +92,7 @@ class NeuralProcess:
             dais_adapt_step_size_to_std_z=dais_adapt_step_size_to_std_z,
             dais_scalar_step_size=dais_scalar_step_size,
             dais_partial=dais_partial,
+            dais_partial_gamma=dais_partial_gamma,
             dais_schedule=dais_schedule,
         )
 
@@ -174,6 +176,7 @@ class NeuralProcess:
         dais_adapt_step_size_to_std_z: bool, 
         dais_scalar_step_size: bool, 
         dais_partial: bool,
+        dais_partial_gamma: float,
         dais_schedule: str,
     ) -> dict:
         config = {
@@ -253,6 +256,7 @@ class NeuralProcess:
                 "n_steps": n_annealing_steps,
                 'step_size': dais_step_size,
                 'partial': dais_partial,
+                'partial_gamma': dais_partial_gamma,
                 'schedule': dais_schedule,
                 'adapt_step_size_to_std_z': dais_adapt_step_size_to_std_z,
                 'scalar_step_size': dais_scalar_step_size,
@@ -535,6 +539,7 @@ class NeuralProcess:
                     adapt_step_size_to_std_z=loss_kwargs['adapt_step_size_to_std_z'], 
                     scalar_step_size=loss_kwargs['scalar_step_size'], 
                     partial=loss_kwargs['partial'],
+                    partial_gamma=loss_kwargs['partial_gamma'],
                     schedule=loss_kwargs['schedule'],
                 )
             elif loss_type == "VI":
@@ -712,7 +717,7 @@ class NeuralProcess:
     
     def _log_marg_lhd_np_dais(self, x_tgt, y_tgt, mu_z_ctx, cov_z_ctx, n_marg, 
                               n_steps=10, step_size=0.08, adapt_step_size_to_std_z=False, scalar_step_size=False, 
-                              partial=False, schedule='linear'):
+                              partial=False, partial_gamma=0.9, schedule='linear'):
         assert x_tgt.ndim == y_tgt.ndim == 3  # (n_tsk, n_tst, d_x/d_y)
         assert x_tgt.nelement() != 0
         assert y_tgt.nelement() != 0
@@ -781,6 +786,7 @@ class NeuralProcess:
             n_steps=n_steps,
             step_size=step_size,
             partial=partial,
+            gamma=partial_gamma,
             betas=betas,
             rng=self._rng,
         )
